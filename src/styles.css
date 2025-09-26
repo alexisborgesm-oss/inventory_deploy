@@ -1,0 +1,268 @@
+:root {
+  --bg: #0b0c0f;
+  --panel: #12151b;
+  --muted: #9aa4b2;
+  --text: #e8edf3;
+  --accent: #4b8cff;
+  --danger: #ef4444;
+  --border: #1f2430;
+  --soft: #171b22;
+  --soft2: #0f1218;
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  height: 100%;
+}
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto,
+    "Helvetica Neue", Arial;
+  background: linear-gradient(180deg, var(--soft2), var(--soft));
+  color: var(--text);
+}
+
+/* Layout */
+.app {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 16px;
+}
+.header {
+  display: grid;
+  gap: 12px;
+}
+.title {
+  margin: 0;
+  font-size: 28px;
+}
+.subtitle {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* Controls */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.input {
+  background: #0d1117;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 12px;
+  min-width: 180px;
+}
+.btn {
+  background: #0d1117;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: transform 0.05s ease, background 0.15s ease, border 0.15s ease;
+}
+.btn:hover {
+  transform: translateY(-1px);
+  border-color: #2a3242;
+  background: #111725;
+}
+.btn:active {
+  transform: translateY(0);
+}
+.btn-primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: white;
+}
+.btn-primary:hover {
+  filter: brightness(1.05);
+}
+.btn-danger {
+  border-color: transparent;
+  background: var(--danger);
+  color: white;
+}
+.btn-outline {
+  background: transparent;
+}
+
+/* Cards / lists */
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px;
+}
+.card-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.snap-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.snap-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: #0d1117;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 60vw;
+}
+.actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+/* Table */
+.table-wrapper {
+  overflow: auto;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+.table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  min-width: 720px;
+}
+.table th,
+.table td {
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel);
+  font-weight: 600;
+  text-align: left;
+}
+.th-flex {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.icon {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 2px 8px;
+  cursor: pointer;
+  color: var(--text);
+}
+.icon:hover {
+  background: #151a22;
+}
+.icon.danger {
+  color: #ff8b8b;
+  border-color: #3a2326;
+}
+.icon.danger:hover {
+  background: #2a171a;
+}
+
+.table .bg {
+  background: #0f141c;
+}
+.center {
+  text-align: center;
+}
+.strong {
+  font-weight: 700;
+}
+.cell-item {
+  white-space: nowrap;
+}
+
+/* Inputs inside table */
+.qty {
+  width: 90px;
+  max-width: 100%;
+  text-align: center;
+  background: #0d1117;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+.low {
+  background: #2a171a !important;
+} /* low-stock highlight */
+
+/* Modal */
+.modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 16px;
+}
+.modal-card {
+  width: min(100%, 980px);
+  max-height: 90vh;
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Responsive tweaks */
+@media (max-width: 720px) {
+  .title {
+    font-size: 22px;
+  }
+  .toolbar .btn,
+  .toolbar .input {
+    flex: 1 1 auto;
+  }
+  .truncate {
+    max-width: 50vw;
+  }
+  .qty {
+    width: 70px;
+  }
+  .table {
+    min-width: 600px;
+  } /* horizontal scroll on phones */
+}
