@@ -8,7 +8,7 @@ export default defineConfig({
       name: 'html-transform',
       transformIndexHtml(html) {
         return html.replace(/<title>(.*?)<\/title>/, '<title>Inventory</title>')
-      }],
+      }}],
   server: {
     allowedHosts: [
       "localhost",
