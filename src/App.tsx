@@ -74,7 +74,7 @@ async function deleteAreaRecord(id: string) {
 }
 
 /* =============== App =============== */
-type Tab = "area" | "matrix" | "records";
+type Tab = "area" | "matrix" | "records" | "catalog";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("area");
@@ -225,7 +225,7 @@ export default function App() {
   };
 
   /* =========================================================
-     VIEW 2: MATRIX
+     VIEW 2: MATRIX (sin botones de crear)
      ========================================================= */
   const persist = async (ns: InventoryState) => {
     setSaving(true);
@@ -234,20 +234,6 @@ export default function App() {
     } finally {
       setSaving(false);
     }
-  };
-
-  const addArea = async () => {
-    const name = prompt("New area name:")?.trim();
-    if (!name) return;
-    if (areas.includes(name)) return alert("Area already exists.");
-    const ns: InventoryState = {
-      areas: [...areas, name],
-      items: [...items],
-      quantities: quantities.map((row) => [...row, 0]),
-    };
-    setAreas(ns.areas);
-    setQuantities(ns.quantities);
-    await persist(ns);
   };
 
   const removeArea = async (c: number) => {
@@ -263,22 +249,6 @@ export default function App() {
       }),
     };
     setAreas(ns.areas);
-    setQuantities(ns.quantities);
-    await persist(ns);
-  };
-
-  const addItem = async () => {
-    const name = prompt("New item name:")?.trim();
-    if (!name) return;
-    if (items.some((it) => it.name.toLowerCase() === name.toLowerCase()))
-      return alert("Item already exists.");
-    const th = Number(prompt("Low stock threshold (optional):") || 0) || 0;
-    const ns: InventoryState = {
-      areas: [...areas],
-      items: [...items, { name, threshold: th }],
-      quantities: [...quantities, Array(areas.length).fill(0)],
-    };
-    setItems(ns.items);
     setQuantities(ns.quantities);
     await persist(ns);
   };
@@ -303,11 +273,79 @@ export default function App() {
     try {
       await deleteAreaRecord(id);
       setRecords((rs) => rs.filter((x) => x.id !== id));
-      // si el modal está abierto para ese registro, ciérralo
       if (recordDetail?.id === id) setRecordDetail(null);
     } catch (e) {
       alert("Could not delete record.");
     }
+  };
+
+  /* =========================================================
+     VIEW 4: CATALOG (Áreas & Ítems)
+     ========================================================= */
+  const [newArea, setNewArea] = useState("");
+  const [newItem, setNewItem] = useState("");
+  const [newItemTh, setNewItemTh] = useState<number>(0);
+
+  const addArea = async () => {
+    const name = newArea.trim();
+    if (!name) return alert("Area name is required.");
+    if (areas.includes(name)) return alert("Area already exists.");
+    const ns: InventoryState = {
+      areas: [...areas, name],
+      items: [...items],
+      quantities: quantities.map((row) => [...row, 0]),
+    };
+    setAreas(ns.areas);
+    setQuantities(ns.quantities);
+    setNewArea("");
+    await persist(ns);
+  };
+
+  const addItem = async () => {
+    const name = newItem.trim();
+    if (!name) return alert("Item name is required.");
+    if (items.some((it) => it.name.toLowerCase() === name.toLowerCase()))
+      return alert("Item already exists.");
+    const th = Number(newItemTh) || 0;
+    const ns: InventoryState = {
+      areas: [...areas],
+      items: [...items, { name, threshold: th }],
+      quantities: [...quantities, Array(areas.length).fill(0)],
+    };
+    setItems(ns.items);
+    setQuantities(ns.quantities);
+    setNewItem("");
+    setNewItemTh(0);
+    await persist(ns);
+  };
+
+  const renameArea = async (idx: number) => {
+    const current = areas[idx];
+    const next = prompt(`Rename area "${current}" to:`, current)?.trim();
+    if (!next || next === current) return;
+    if (areas.includes(next)) return alert("Area name already in use.");
+    const ns: InventoryState = {
+      areas: areas.map((a, i) => (i === idx ? next : a)),
+      items: [...items],
+      quantities: quantities.map((row) => row.slice()),
+    };
+    setAreas(ns.areas);
+    await persist(ns);
+  };
+
+  const renameItem = async (idx: number) => {
+    const current = items[idx].name;
+    const next = prompt(`Rename item "${current}" to:`, current)?.trim();
+    if (!next || next === current) return;
+    if (items.some((it, i) => i !== idx && it.name.toLowerCase() === next.toLowerCase()))
+      return alert("Item name already in use.");
+    const ns: InventoryState = {
+      areas: [...areas],
+      items: items.map((it, i) => (i === idx ? { ...it, name: next } : it)),
+      quantities: quantities.map((row) => row.slice()),
+    };
+    setItems(ns.items);
+    await persist(ns);
   };
 
   /* ===================== UI ===================== */
@@ -347,6 +385,12 @@ export default function App() {
             onClick={() => setTab("records")}
           >
             Records (by Area)
+          </button>
+          <button
+            className={`tab ${tab === "catalog" ? "active" : ""}`}
+            onClick={() => setTab("catalog")}
+          >
+            Catalog
           </button>
         </div>
       </div>
@@ -430,19 +474,11 @@ export default function App() {
           </div>
         )}
 
-        {/* =============== VIEW 2: MATRIX =============== */}
+        {/* =============== VIEW 2: MATRIX (sin crear) =============== */}
         {tab === "matrix" && (
           <div className="card" style={{ padding: 16 }}>
             <div className="row" style={{ justifyContent: "space-between" }}>
-              <div className="row">
-                <button className="btn accent" onClick={addArea}>
-                  + Area
-                </button>
-                <button className="btn accent" onClick={addItem}>
-                  + Item
-                </button>
-              </div>
-              <div className="badge">Edit numbers in place. Trash 🗑️ to delete.</div>
+              <div className="badge">Edit numbers in place. Use Catalog to add new areas/items.</div>
             </div>
 
             <div className="hr" />
@@ -575,6 +611,134 @@ export default function App() {
                 ))}
               </div>
             )}
+          </div>
+        )}
+
+        {/* =============== VIEW 4: CATALOG (Áreas & Ítems) =============== */}
+        {tab === "catalog" && (
+          <div className="card" style={{ padding: 16 }}>
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <div className="brand" style={{ gap: 8 }}>
+                <i>🗃️</i> Catalog
+              </div>
+              <div className="badge">These lists feed Area Inventory & Matrix</div>
+            </div>
+
+            <div className="hr" />
+
+            <div className="stack">
+              {/* AREAS */}
+              <div className="card" style={{ padding: 14 }}>
+                <div className="row" style={{ justifyContent: "space-between" }}>
+                  <div style={{ fontWeight: 700 }}>Areas</div>
+                  <div className="row">
+                    <input
+                      className="input"
+                      placeholder="New area name…"
+                      value={newArea}
+                      onChange={(e) => setNewArea(e.target.value)}
+                    />
+                    <button className="btn accent" onClick={addArea}>
+                      + Add Area
+                    </button>
+                  </div>
+                </div>
+
+                <div className="hr" />
+                {areas.length === 0 ? (
+                  <div className="muted">No areas yet.</div>
+                ) : (
+                  <div style={{ display: "grid", gap: 8 }}>
+                    {areas.map((a, i) => (
+                      <div
+                        key={i}
+                        className="row"
+                        style={{
+                          justifyContent: "space-between",
+                          border: "1px solid var(--border)",
+                          padding: "8px 10px",
+                          borderRadius: 10,
+                          background: "#0f1629",
+                        }}
+                      >
+                        <div>{a}</div>
+                        <div className="row">
+                          <button className="btn" onClick={() => renameArea(i)}>
+                            Rename
+                          </button>
+                          <button className="btn danger" onClick={() => removeArea(i)}>
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* ITEMS */}
+              <div className="card" style={{ padding: 14 }}>
+                <div className="row" style={{ justifyContent: "space-between" }}>
+                  <div style={{ fontWeight: 700 }}>Items</div>
+                  <div className="row" style={{ gap: 8 }}>
+                    <input
+                      className="input"
+                      placeholder="New item name…"
+                      value={newItem}
+                      onChange={(e) => setNewItem(e.target.value)}
+                      style={{ minWidth: 160 }}
+                    />
+                    <input
+                      type="number"
+                      min={0}
+                      className="input"
+                      placeholder="Threshold"
+                      value={newItemTh}
+                      onChange={(e) => setNewItemTh(Number(e.target.value) || 0)}
+                      style={{ width: 120 }}
+                      title="Low stock threshold (optional)"
+                    />
+                    <button className="btn accent" onClick={addItem}>
+                      + Add Item
+                    </button>
+                  </div>
+                </div>
+
+                <div className="hr" />
+                {items.length === 0 ? (
+                  <div className="muted">No items yet.</div>
+                ) : (
+                  <div style={{ display: "grid", gap: 8 }}>
+                    {items.map((it, i) => (
+                      <div
+                        key={i}
+                        className="row"
+                        style={{
+                          justifyContent: "space-between",
+                          border: "1px solid var(--border)",
+                          padding: "8px 10px",
+                          borderRadius: 10,
+                          background: "#0f1629",
+                        }}
+                      >
+                        <div>
+                          <div style={{ fontWeight: 600 }}>{it.name}</div>
+                          <div className="muted">Threshold: {it.threshold || 0}</div>
+                        </div>
+                        <div className="row">
+                          <button className="btn" onClick={() => renameItem(i)}>
+                            Rename
+                          </button>
+                          <button className="btn danger" onClick={() => removeItem(i)}>
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         )}
 
