@@ -13,7 +13,7 @@ export default defineConfig({
     allowedHosts: [
       "localhost",
       "127.0.0.1",
-      "https://inventory-deploy-sable.vercel.app",
+      "inventory-deploy-sable.vercel.app",
       "5zxjm6-5173.csb.app", // 👈 tu dominio público en CodeSandbox
     ],
   },
