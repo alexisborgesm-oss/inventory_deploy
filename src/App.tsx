@@ -89,6 +89,8 @@ export default function App() {
   // Records (area_inventories)
   const [records, setRecords] = useState<AreaRecord[]>([]);
   const [recLoading, setRecLoading] = useState(false);
+ // Record detail modal
+  const [recordDetail, setRecordDetail] = useState<AreaRecord | null>(null);
 
   /* ------------ Initial load ------------ */
   useEffect(() => {
@@ -564,9 +566,15 @@ export default function App() {
                           Items saved: {(r.items as any[])?.length ?? 0}
                         </div>
                       </div>
-                      <button className="btn danger" onClick={() => deleteRecord(r.id)}>
-                        Delete
-                      </button>
+                      <div className="row">
+  <button className="btn" onClick={() => setRecordDetail(r)}>
+    View
+  </button>
+  <button className="btn danger" onClick={() => deleteRecord(r.id)}>
+    Delete
+  </button>
+</div>
+
                     </div>
                   </div>
                 ))}
