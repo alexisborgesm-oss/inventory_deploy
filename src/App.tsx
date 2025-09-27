@@ -1,3 +1,4 @@
+// src/App.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import "./styles.css";
 import { supabase } from "./supabase";
@@ -13,7 +14,7 @@ type AreaRecord = {
   id: string;
   area_name: string;
   area_index: number;
-  inventory_date: string; // ISO (date)
+  inventory_date: string; // ISO date (YYYY-MM-DD)
   items: { name: string; qty: number }[];
   created_at: string;
 };
@@ -24,7 +25,6 @@ const todayISO = () => {
   const d = new Date();
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 };
-
 const STATE_ID = "main";
 
 /* =============== Supabase helpers =============== */
@@ -89,7 +89,7 @@ export default function App() {
   // Records (area_inventories)
   const [records, setRecords] = useState<AreaRecord[]>([]);
   const [recLoading, setRecLoading] = useState(false);
- // Record detail modal
+  // Modal detail
   const [recordDetail, setRecordDetail] = useState<AreaRecord | null>(null);
 
   /* ------------ Initial load ------------ */
@@ -129,7 +129,7 @@ export default function App() {
     })();
   }, []);
 
-  /* ------------ Load latest area records list ------------ */
+  /* ------------ Load records list ------------ */
   const refreshRecords = async () => {
     setRecLoading(true);
     try {
@@ -164,10 +164,6 @@ export default function App() {
 
   /* =========================================================
      VIEW 1: AREA INVENTORY (principal)
-     - Selección de área
-     - Date picker
-     - Editar cantidades de esa columna
-     - Guardar: upsert inventario en inventory_state + snapshot en area_inventories
      ========================================================= */
   const [areaIdx, setAreaIdx] = useState(0);
   const [filter, setFilter] = useState("");
@@ -230,9 +226,6 @@ export default function App() {
 
   /* =========================================================
      VIEW 2: MATRIX
-     - Siempre muestra el último estado guardado (ya lo actualizamos al guardar en la vista 1)
-     - Permite agregar/eliminar áreas/ítems y editar cantidades
-     - Cada cambio persistente actualiza inventory_state
      ========================================================= */
   const persist = async (ns: InventoryState) => {
     setSaving(true);
@@ -303,14 +296,15 @@ export default function App() {
   };
 
   /* =========================================================
-     VIEW 3: RECORDS (by area)
-     - Lista y permite borrar registros de area_inventories
+     VIEW 3: RECORDS (by Area)
      ========================================================= */
   const deleteRecord = async (id: string) => {
     if (!confirm("Delete this record?")) return;
     try {
       await deleteAreaRecord(id);
       setRecords((rs) => rs.filter((x) => x.id !== id));
+      // si el modal está abierto para ese registro, ciérralo
+      if (recordDetail?.id === id) setRecordDetail(null);
     } catch (e) {
       alert("Could not delete record.");
     }
@@ -548,7 +542,9 @@ export default function App() {
                 </button>
               </div>
             </div>
+
             <div className="hr" />
+
             {recLoading ? (
               <div className="badge">Loading…</div>
             ) : records.length === 0 ? (
@@ -567,14 +563,13 @@ export default function App() {
                         </div>
                       </div>
                       <div className="row">
-  <button className="btn" onClick={() => setRecordDetail(r)}>
-    View
-  </button>
-  <button className="btn danger" onClick={() => deleteRecord(r.id)}>
-    Delete
-  </button>
-</div>
-
+                        <button className="btn" onClick={() => setRecordDetail(r)}>
+                          View
+                        </button>
+                        <button className="btn danger" onClick={() => deleteRecord(r.id)}>
+                          Delete
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -582,57 +577,59 @@ export default function App() {
             )}
           </div>
         )}
-        {/* ===== Record Detail Modal ===== */}
-{recordDetail && (
-  <div className="modal-backdrop" onClick={() => setRecordDetail(null)}>
-    <div className="modal" onClick={(e) => e.stopPropagation()}>
-      <div className="modal-head">
-        <div className="brand" style={{ gap: 8 }}>
-          <i>🗂️</i>
-          <span>
-            {recordDetail.area_name} — {recordDetail.inventory_date}
-          </span>
-        </div>
-        <button className="btn" onClick={() => setRecordDetail(null)}>Close</button>
-      </div>
-      <div className="modal-body">
-        <div className="badge" style={{ marginBottom: 8 }}>
-          Items in this record
-        </div>
-        <div className="card" style={{ padding: 10 }}>
-          <table className="table">
-            <thead>
-              <tr>
-                <th style={{ textAlign: "left" }}>Item</th>
-                <th>Quantity</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recordDetail.items.map((it, i) => (
-                <tr key={i}>
-                  <td style={{ textAlign: "left" }}>{it.name}</td>
-                  <td>{Number(it.qty) || 0}</td>
-                </tr>
-              ))}
-            </tbody>
-            <tfoot>
-              <tr>
-                <td style={{ textAlign: "left", fontWeight: 700 }}>TOTAL</td>
-                <td style={{ fontWeight: 800 }}>
-                  {recordDetail.items.reduce((a, b) => a + (Number(b.qty) || 0), 0)}
-                </td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
-        <div className="muted" style={{ marginTop: 10 }}>
-          Saved at: {new Date(recordDetail.created_at).toLocaleString()}
-        </div>
-      </div>
-    </div>
-  </div>
-)}
 
+        {/* ===== Record Detail Modal ===== */}
+        {recordDetail && (
+          <div className="modal-backdrop" onClick={() => setRecordDetail(null)}>
+            <div className="modal" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-head">
+                <div className="brand" style={{ gap: 8 }}>
+                  <i>🗂️</i>
+                  <span>
+                    {recordDetail.area_name} — {recordDetail.inventory_date}
+                  </span>
+                </div>
+                <button className="btn" onClick={() => setRecordDetail(null)}>
+                  Close
+                </button>
+              </div>
+              <div className="modal-body">
+                <div className="badge" style={{ marginBottom: 8 }}>
+                  Items in this record
+                </div>
+                <div className="card" style={{ padding: 10 }}>
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th style={{ textAlign: "left" }}>Item</th>
+                        <th>Quantity</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {recordDetail.items.map((it, i) => (
+                        <tr key={i}>
+                          <td style={{ textAlign: "left" }}>{it.name}</td>
+                          <td>{Number(it.qty) || 0}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr>
+                        <td style={{ textAlign: "left", fontWeight: 700 }}>TOTAL</td>
+                        <td style={{ fontWeight: 800 }}>
+                          {recordDetail.items.reduce((a, b) => a + (Number(b.qty) || 0), 0)}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+                <div className="muted" style={{ marginTop: 10 }}>
+                  Saved at: {new Date(recordDetail.created_at).toLocaleString()}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </>
   );
