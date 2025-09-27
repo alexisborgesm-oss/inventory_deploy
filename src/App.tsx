@@ -582,6 +582,57 @@ export default function App() {
             )}
           </div>
         )}
+        {/* ===== Record Detail Modal ===== */}
+{recordDetail && (
+  <div className="modal-backdrop" onClick={() => setRecordDetail(null)}>
+    <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className="modal-head">
+        <div className="brand" style={{ gap: 8 }}>
+          <i>🗂️</i>
+          <span>
+            {recordDetail.area_name} — {recordDetail.inventory_date}
+          </span>
+        </div>
+        <button className="btn" onClick={() => setRecordDetail(null)}>Close</button>
+      </div>
+      <div className="modal-body">
+        <div className="badge" style={{ marginBottom: 8 }}>
+          Items in this record
+        </div>
+        <div className="card" style={{ padding: 10 }}>
+          <table className="table">
+            <thead>
+              <tr>
+                <th style={{ textAlign: "left" }}>Item</th>
+                <th>Quantity</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recordDetail.items.map((it, i) => (
+                <tr key={i}>
+                  <td style={{ textAlign: "left" }}>{it.name}</td>
+                  <td>{Number(it.qty) || 0}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td style={{ textAlign: "left", fontWeight: 700 }}>TOTAL</td>
+                <td style={{ fontWeight: 800 }}>
+                  {recordDetail.items.reduce((a, b) => a + (Number(b.qty) || 0), 0)}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        <div className="muted" style={{ marginTop: 10 }}>
+          Saved at: {new Date(recordDetail.created_at).toLocaleString()}
+        </div>
+      </div>
+    </div>
+  </div>
+)}
+
       </div>
     </>
   );
