@@ -1,270 +1,149 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import * as XLSX from "xlsx";
-import { createClient } from "@supabase/supabase-js";
+import React, { useEffect, useMemo, useState } from "react";
+import "./styles.css";
+import { supabase } from "./supabase";
 
-/* ============== SUPABASE ============== */
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
-const SUPABASE_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON);
-
-/* ============== TYPES ============== */
+/* =============== Types =============== */
 type Item = { name: string; threshold: number };
-type Snapshot = {
+type InventoryState = {
+  areas: string[];
+  items: Item[];
+  quantities: number[][]; // items x areas
+};
+type AreaRecord = {
   id: string;
-  title?: string;
-  dateISO: string; // Supabase created_at
-  data: { areas: string[]; items: Item[]; quantities: number[][] };
+  area_name: string;
+  area_index: number;
+  inventory_date: string; // ISO (date)
+  items: { name: string; qty: number }[];
+  created_at: string;
 };
 
-/* ============== CONSTANTS ============== */
-const STORAGE_KEY = "inventory_matrix_v2";
-const SNAPSHOTS_CACHE_KEY = "inventory_snapshots_cache_v1";
-const CLOUD_STATE_ID = "current"; // single-row document in inventory_state
-
-/* ============== UTILS ============== */
+/* =============== Helpers =============== */
 const pad2 = (n: number) => String(n).padStart(2, "0");
-const nowStamp = () => {
+const todayISO = () => {
   const d = new Date();
-  return (
-    `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}` +
-    `_${pad2(d.getHours())}-${pad2(d.getMinutes())}-${pad2(d.getSeconds())}`
-  );
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 };
-const cx = (...xs: (string | false | null | undefined)[]) =>
-  xs.filter(Boolean).join(" ");
 
-function exportToXLSX(
-  items: Item[],
-  areas: string[],
-  quantities: number[][],
-  filename?: string
-) {
-  const header = ["Item", ...areas, "Total"];
-  const rows = items.map((it, r) => {
-    const total = (quantities[r] || []).reduce(
-      (a, b) => a + (Number(b) || 0),
-      0
-    );
-    return [it.name, ...areas.map((_, c) => quantities[r]?.[c] ?? 0), total];
-  });
-  const colTotals = areas.map((_, c) =>
-    quantities.reduce((a, row) => a + (Number(row?.[c]) || 0), 0)
-  );
-  const grand = colTotals.reduce((a, b) => a + b, 0);
-  const footer = ["TOTAL", ...colTotals, grand];
+const STATE_ID = "main";
 
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(
-    wb,
-    XLSX.utils.aoa_to_sheet([header, ...rows, footer]),
-    "Inventory"
-  );
-
-  const meta = [
-    ["Date", new Date().toISOString()],
-    ["Areas", areas.length],
-    ["Items", items.length],
-    ["Grand total", grand],
-  ];
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(meta), "Meta");
-
-  XLSX.writeFile(wb, filename || `inventory_${nowStamp()}.xlsx`);
+/* =============== Supabase helpers =============== */
+async function loadState(): Promise<InventoryState | null> {
+  const { data, error } = await supabase
+    .from("inventory_state")
+    .select("data")
+    .eq("id", STATE_ID)
+    .maybeSingle();
+  if (error) {
+    console.warn("loadState error", error);
+    return null;
+  }
+  return data?.data ?? null;
 }
 
-/* ============== APP ============== */
-export default function InventoryApp() {
-  /* Main state (defaults first run only) */
-  const [areas, setAreas] = useState<string[]>([
-    "Kitchen",
-    "Spa",
-    "Front Desk",
-    "Office",
-  ]);
-  const [items, setItems] = useState<Item[]>([
-    { name: "Broom", threshold: 2 },
-    { name: "Towels", threshold: 10 },
-    { name: "Pencils", threshold: 5 },
-  ]);
-  const [quantities, setQuantities] = useState<number[][]>([
-    [3, 5, 0, 0],
-    [20, 40, 0, 0],
-    [0, 0, 0, 15],
-  ]);
+async function saveState(newState: InventoryState) {
+  const { error } = await supabase
+    .from("inventory_state")
+    .upsert({ id: STATE_ID, data: newState }, { onConflict: "id" });
+  if (error) throw error;
+}
 
-  /* UI */
-  const [q, setQ] = useState("");
+async function insertAreaRecord(rec: Omit<AreaRecord, "id" | "created_at">) {
+  const { error } = await supabase.from("area_inventories").insert({
+    area_name: rec.area_name,
+    area_index: rec.area_index,
+    inventory_date: rec.inventory_date,
+    items: rec.items,
+  });
+  if (error) throw error;
+}
 
-  /* Snapshots */
-  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
-  const [viewSnap, setViewSnap] = useState<Snapshot | null>(null);
-  const [loadingSnaps, setLoadingSnaps] = useState(false);
-  const [syncing, setSyncing] = useState(false);
-  const syncTimer = useRef<number | null>(null);
+async function fetchAreaRecords(limit = 20): Promise<AreaRecord[]> {
+  const { data, error } = await supabase
+    .from("area_inventories")
+    .select("id, area_name, area_index, inventory_date, items, created_at")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return data as any;
+}
 
-  /* ---------- First load: try cloud state, fallback to local ---------- */
+async function deleteAreaRecord(id: string) {
+  const { error } = await supabase.from("area_inventories").delete().eq("id", id);
+  if (error) throw error;
+}
+
+/* =============== App =============== */
+type Tab = "area" | "matrix" | "records";
+
+export default function App() {
+  const [tab, setTab] = useState<Tab>("area");
+
+  const [areas, setAreas] = useState<string[]>([]);
+  const [items, setItems] = useState<Item[]>([]);
+  const [quantities, setQuantities] = useState<number[][]>([]);
+
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  // Records (area_inventories)
+  const [records, setRecords] = useState<AreaRecord[]>([]);
+  const [recLoading, setRecLoading] = useState(false);
+
+  /* ------------ Initial load ------------ */
   useEffect(() => {
     (async () => {
-      const { data, error } = await supabase
-        .from("inventory_state")
-        .select("data")
-        .eq("id", CLOUD_STATE_ID)
-        .single();
-
-      if (!error && data?.data) {
-        const cloud = data.data as {
-          areas: string[];
-          items: Item[];
-          quantities: number[][];
-        };
-        setAreas(cloud.areas || []);
-        setItems(cloud.items || []);
-        setQuantities(cloud.quantities || []);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(cloud));
+      setLoading(true);
+      const remote = await loadState();
+      if (remote) {
+        setAreas(remote.areas);
+        setItems(remote.items);
+        setQuantities(remote.quantities);
       } else {
+        // seed inicial si no hay nada en la base
+        const seed: InventoryState = {
+          areas: ["Kitchen", "Spa", "Front desk", "Office"],
+          items: [
+            { name: "Broom", threshold: 2 },
+            { name: "Towels", threshold: 10 },
+            { name: "Pencils", threshold: 5 },
+          ],
+          quantities: [
+            [3, 5, 0, 0],
+            [20, 40, 0, 0],
+            [0, 0, 0, 15],
+          ],
+        };
+        setAreas(seed.areas);
+        setItems(seed.items);
+        setQuantities(seed.quantities);
         try {
-          const raw = localStorage.getItem(STORAGE_KEY);
-          if (raw) {
-            const parsed = JSON.parse(raw);
-            if (parsed?.areas && parsed?.items && parsed?.quantities) {
-              setAreas(parsed.areas);
-              setItems(parsed.items);
-              setQuantities(parsed.quantities);
-            }
-          }
-        } catch {}
+          await saveState(seed);
+        } catch (e) {
+          console.warn("Could not seed state:", e);
+        }
       }
+      setLoading(false);
     })();
   }, []);
 
-  /* ---------- Local backup ---------- */
-  useEffect(() => {
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({ areas, items, quantities })
-    );
-  }, [areas, items, quantities]);
-
-  /* ---------- Auto-sync to cloud on any change (debounced) ---------- */
-  useEffect(() => {
-    if (syncTimer.current) window.clearTimeout(syncTimer.current);
-    syncTimer.current = window.setTimeout(async () => {
-      setSyncing(true);
-      try {
-        const { error } = await supabase.from("inventory_state").upsert(
-          {
-            id: CLOUD_STATE_ID,
-            data: { areas, items, quantities },
-          },
-          { onConflict: "id" }
-        );
-        if (error) console.warn("Cloud sync error:", error);
-      } finally {
-        setSyncing(false);
-      }
-    }, 700);
-  }, [areas, items, quantities]);
-
-  /* ---------- Load snapshots ---------- */
-  const refreshSnapshots = async () => {
-    setLoadingSnaps(true);
+  /* ------------ Load latest area records list ------------ */
+  const refreshRecords = async () => {
+    setRecLoading(true);
     try {
-      const { data, error } = await supabase
-        .from("inventory_snapshots")
-        .select("id, created_at, title, data")
-        .order("created_at", { ascending: false })
-        .limit(5);
-
-      if (error) {
-        alert("Could not refresh from Supabase. Showing local cache.");
-        const raw = localStorage.getItem(SNAPSHOTS_CACHE_KEY);
-        if (raw) setSnapshots(JSON.parse(raw));
-        return;
-      }
-      const snaps: Snapshot[] = (data || []).map((row: any) => ({
-        id: row.id,
-        title: row.title ?? undefined,
-        dateISO: row.created_at,
-        data: row.data,
-      }));
-      setSnapshots(snaps);
-      localStorage.setItem(SNAPSHOTS_CACHE_KEY, JSON.stringify(snaps));
+      const data = await fetchAreaRecords(20);
+      setRecords(data);
+    } catch (e) {
+      console.warn("fetchAreaRecords error", e);
     } finally {
-      setLoadingSnaps(false);
+      setRecLoading(false);
     }
   };
-
   useEffect(() => {
-    refreshSnapshots();
+    refreshRecords();
   }, []);
 
-  /* ---------- Realtime: listen to changes in inventory_state.current ---------- */
-  useEffect(() => {
-    const channel = supabase
-      .channel("inv-state")
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "inventory_state",
-          filter: "id=eq.current",
-        },
-        async () => {
-          const { data, error } = await supabase
-            .from("inventory_state")
-            .select("data")
-            .eq("id", CLOUD_STATE_ID)
-            .single();
-
-          if (!error && data?.data) {
-            const cloud = data.data as {
-              areas: string[];
-              items: Item[];
-              quantities: number[][];
-            };
-            setAreas(cloud.areas || []);
-            setItems(cloud.items || []);
-            setQuantities(cloud.quantities || []);
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(cloud));
-          }
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, []);
-
-  /* ---------- Immediate cloud upsert helper ---------- */
-  const upsertNow = async (next: {
-    areas: string[];
-    items: Item[];
-    quantities: number[][];
-  }) => {
-    const { error } = await supabase
-      .from("inventory_state")
-      .upsert({ id: CLOUD_STATE_ID, data: next }, { onConflict: "id" });
-    if (error) {
-      console.warn("Immediate cloud upsert failed:", error);
-    } else {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-    }
-  };
-
-  /* Totals */
-  const rowTotals = useMemo(
-    () =>
-      items.map(
-        (_, r) =>
-          (quantities[r] || []).reduce(
-            (a: number, b: number) => a + (Number(b) || 0),
-            0
-          ),
-        []
-      ),
-    [items, quantities]
-  );
+  /* ------------ Totals ------------ */
   const colTotals = useMemo(
     () =>
       areas.map((_, c) =>
@@ -272,497 +151,430 @@ export default function InventoryApp() {
       ),
     [areas, quantities]
   );
-  const grandTotal = useMemo(
-    () => colTotals.reduce((a, b) => a + b, 0),
-    [colTotals]
-  );
-
-  /* Filtering */
-  const filteredIdx = useMemo(
+  const rowTotals = useMemo(
     () =>
-      items
-        .map((it, idx) => ({ it, idx }))
-        .filter(({ it }) => it.name.toLowerCase().includes(q.toLowerCase()))
-        .map(({ idx }) => idx),
-    [items, q]
+      items.map((_, r) =>
+        (quantities[r] || []).reduce((a, b) => a + (Number(b) || 0), 0)
+      ),
+    [items, quantities]
   );
+  const grand = useMemo(() => colTotals.reduce((a, b) => a + b, 0), [colTotals]);
 
-  /* Edit quantity */
-  const setQty = (r: number, c: number, val: string) => {
-    const n = Number(val) || 0;
+  /* =========================================================
+     VIEW 1: AREA INVENTORY (principal)
+     - Selección de área
+     - Date picker
+     - Editar cantidades de esa columna
+     - Guardar: upsert inventario en inventory_state + snapshot en area_inventories
+     ========================================================= */
+  const [areaIdx, setAreaIdx] = useState(0);
+  const [filter, setFilter] = useState("");
+  const [dateISO, setDateISO] = useState<string>(todayISO());
+
+  const visibleRows = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return items.map((_, i) => i);
+    return items
+      .map((it, i) => ({ it, i }))
+      .filter(({ it }) => it.name.toLowerCase().includes(q))
+      .map(({ i }) => i);
+  }, [items, filter]);
+
+  const setQtyCell = (r: number, c: number, value: number) => {
     setQuantities((prev) => {
-      const copy = prev.map((row) => row.slice());
-      copy[r][c] = n;
-      return copy;
+      const cp = prev.map((row) => row.slice());
+      cp[r][c] = value;
+      return cp;
     });
   };
 
-  /* Add area (immediate upsert) */
-  const addArea = async () => {
-    const label = prompt("New area name:")?.trim();
-    if (!label) return;
-    if (areas.includes(label)) {
-      alert("That area already exists.");
-      return;
+  const saveAreaInventory = async () => {
+    if (!areas[areaIdx]) return alert("Choose an area.");
+    if (!dateISO) return alert("Pick a date.");
+
+    // 1) Actualizar estado global (quantities de esa área)
+    const stateToSave: InventoryState = {
+      areas: [...areas],
+      items: [...items],
+      quantities: quantities.map((row) => row.slice()),
+    };
+    setSaving(true);
+    try {
+      await saveState(stateToSave);
+
+      // 2) Insertar registro histórico del área con fecha
+      const payload = items.map((it, r) => ({
+        name: it.name,
+        qty: Number(stateToSave.quantities[r]?.[areaIdx] ?? 0),
+      }));
+      await insertAreaRecord({
+        area_name: areas[areaIdx],
+        area_index: areaIdx,
+        inventory_date: dateISO, // YYYY-MM-DD
+        items: payload,
+      });
+
+      // 3) Refrescar records para que se vea en la vista 3
+      await refreshRecords();
+
+      alert(`Saved inventory for "${areas[areaIdx]}" (date: ${dateISO}).`);
+    } catch (e: any) {
+      alert("Could not save. Check Supabase credentials/RLS.");
+      console.warn(e);
+    } finally {
+      setSaving(false);
     }
-
-    const nextAreas = [...areas, label];
-    const nextQuantities = quantities.map((row) => [...row, 0]);
-
-    setAreas(nextAreas);
-    setQuantities(nextQuantities);
-
-    await upsertNow({ areas: nextAreas, items, quantities: nextQuantities });
   };
 
-  /* Add item (immediate upsert) */
+  /* =========================================================
+     VIEW 2: MATRIX
+     - Siempre muestra el último estado guardado (ya lo actualizamos al guardar en la vista 1)
+     - Permite agregar/eliminar áreas/ítems y editar cantidades
+     - Cada cambio persistente actualiza inventory_state
+     ========================================================= */
+  const persist = async (ns: InventoryState) => {
+    setSaving(true);
+    try {
+      await saveState(ns);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const addArea = async () => {
+    const name = prompt("New area name:")?.trim();
+    if (!name) return;
+    if (areas.includes(name)) return alert("Area already exists.");
+    const ns: InventoryState = {
+      areas: [...areas, name],
+      items: [...items],
+      quantities: quantities.map((row) => [...row, 0]),
+    };
+    setAreas(ns.areas);
+    setQuantities(ns.quantities);
+    await persist(ns);
+  };
+
+  const removeArea = async (c: number) => {
+    if (!confirm(`Delete area "${areas[c]}"? Quantities will be discarded.`))
+      return;
+    const ns: InventoryState = {
+      areas: areas.filter((_, i) => i !== c),
+      items: [...items],
+      quantities: quantities.map((row) => {
+        const clone = row.slice();
+        clone.splice(c, 1);
+        return clone;
+      }),
+    };
+    setAreas(ns.areas);
+    setQuantities(ns.quantities);
+    await persist(ns);
+  };
+
   const addItem = async () => {
     const name = prompt("New item name:")?.trim();
     if (!name) return;
-    if (items.some((it) => it.name.toLowerCase() === name.toLowerCase())) {
-      alert("That item already exists.");
-      return;
-    }
-    const threshold =
-      Number(prompt("Low-stock threshold (optional):") || 0) || 0;
-
-    const nextItems = [...items, { name, threshold }];
-    const nextQuantities = [...quantities, Array(areas.length).fill(0)];
-
-    setItems(nextItems);
-    setQuantities(nextQuantities);
-
-    await upsertNow({ areas, items: nextItems, quantities: nextQuantities });
+    if (items.some((it) => it.name.toLowerCase() === name.toLowerCase()))
+      return alert("Item already exists.");
+    const th = Number(prompt("Low stock threshold (optional):") || 0) || 0;
+    const ns: InventoryState = {
+      areas: [...areas],
+      items: [...items, { name, threshold: th }],
+      quantities: [...quantities, Array(areas.length).fill(0)],
+    };
+    setItems(ns.items);
+    setQuantities(ns.quantities);
+    await persist(ns);
   };
 
-  /* Rename area (double click) */
-  const renameArea = async (idx: number) => {
-    const current = areas[idx];
-    const label = prompt(`Rename area "${current}" to:`, current)?.trim();
-    if (label === null || label === undefined) return;
-    if (label === "") return alert("Name cannot be empty.");
-    if (
-      areas.some((a, i) => i !== idx && a.toLowerCase() === label.toLowerCase())
-    ) {
-      return alert("That area already exists.");
-    }
-    const nextAreas = areas.map((a, i) => (i === idx ? label : a));
-    setAreas(nextAreas);
-    await upsertNow({ areas: nextAreas, items, quantities });
-  };
-
-  /* Rename item (double click) */
-  const renameItem = async (idx: number) => {
-    const current = items[idx].name;
-    const label = prompt(`Rename item "${current}" to:`, current)?.trim();
-    if (label === null || label === undefined) return;
-    if (label === "") return alert("Name cannot be empty.");
-    if (
-      items.some(
-        (it, i) => i !== idx && it.name.toLowerCase() === label.toLowerCase()
-      )
-    ) {
-      return alert("That item already exists.");
-    }
-    const nextItems = items.map((it, i) =>
-      i === idx ? { ...it, name: label } : it
-    );
-    setItems(nextItems);
-    await upsertNow({ areas, items: nextItems, quantities });
-  };
-
-  /* Ask destination area when deleting an area */
-  const askReassignIndex = (sourceIdx: number): number | null => {
-    if (areas.length <= 1) {
-      const ok = confirm(
-        `No other areas available. Delete "${areas[sourceIdx]}" and DISCARD its quantities?`
-      );
-      return ok ? -1 : null; // -1 discard, null cancel
-    }
-    const options = areas
-      .map((a, i) => (i === sourceIdx ? null : `${i + 1}) ${a}`))
-      .filter(Boolean)
-      .join("\n");
-    const ans = prompt(
-      `You are deleting area "${areas[sourceIdx]}".\n` +
-        `Options:\n${options}\n\n` +
-        `Type the NUMBER of the destination area to REASSIGN its quantities.\n` +
-        `Empty = DISCARD quantities.\n` +
-        `Cancel = abort.`
-    );
-    if (ans === null) return null;
-    const trimmed = ans.trim();
-    if (trimmed === "") return -1; // discard
-    const num = Number(trimmed);
-    if (!Number.isInteger(num)) {
-      alert("Invalid input.");
-      return null;
-    }
-    const destIdx = num - 1;
-    if (destIdx < 0 || destIdx >= areas.length || destIdx === sourceIdx) {
-      alert("Out-of-range / invalid index.");
-      return null;
-    }
-    return destIdx;
-  };
-
-  /* Remove area (immediate upsert) */
-  const removeArea = async (c: number) => {
-    const dest = askReassignIndex(c);
-    if (dest === null) return; // canceled
-
-    const nextAreas = areas.filter((_, i) => i !== c);
-    const nextQuantities = quantities.map((row) => {
-      const copy = row.slice();
-      if (dest >= 0) {
-        const moved = Number(copy[c]) || 0;
-        if (moved !== 0) copy[dest] = (Number(copy[dest]) || 0) + moved;
-      }
-      copy.splice(c, 1);
-      return copy;
-    });
-
-    setAreas(nextAreas);
-    setQuantities(nextQuantities);
-
-    await upsertNow({ areas: nextAreas, items, quantities: nextQuantities });
-  };
-
-  /* Remove item (immediate upsert) */
   const removeItem = async (r: number) => {
     if (!confirm(`Delete item "${items[r].name}"?`)) return;
-
-    const nextItems = items.filter((_, i) => i !== r);
-    const nextQuantities = quantities.filter((_, i) => i !== r);
-
-    setItems(nextItems);
-    setQuantities(nextQuantities);
-
-    await upsertNow({ areas, items: nextItems, quantities: nextQuantities });
-  };
-
-  /* Save snapshot + Excel + Supabase
-     - Also upserts the current state to inventory_state
-  */
-  const saveSnapshotAndExcel = async () => {
-    const defaultTitle = new Date().toLocaleDateString();
-    const titleInput = prompt(
-      `Title/notes for this snapshot (Esc to cancel).\n` +
-        `Leave empty to use today's date: ${defaultTitle}`,
-      defaultTitle
-    );
-    if (titleInput === null) return;
-    const finalTitle =
-      titleInput.trim() === "" ? defaultTitle : titleInput.trim();
-
-    // 0) Ensure cloud state is up-to-date right now (explicit save)
-    setSyncing(true);
-    const payload = { areas, items, quantities };
-    const up = await supabase
-      .from("inventory_state")
-      .upsert({ id: CLOUD_STATE_ID, data: payload }, { onConflict: "id" });
-    setSyncing(false);
-    if (up.error) {
-      alert("Could not save current state to Supabase: " + up.error.message);
-      return;
-    }
-
-    // 1) Excel local
-    exportToXLSX(items, areas, quantities, `inventory_${nowStamp()}.xlsx`);
-
-    // 2) Snapshot (history)
-    const { data, error } = await supabase
-      .from("inventory_snapshots")
-      .insert({ title: finalTitle, data: payload })
-      .select("id, created_at, title, data")
-      .single();
-
-    if (error) {
-      alert("Could not save snapshot in Supabase. Check RLS/keys.");
-      return;
-    }
-
-    const snap: Snapshot = {
-      id: data.id,
-      title: data.title ?? undefined,
-      dateISO: data.created_at,
-      data: data.data,
+    const ns: InventoryState = {
+      areas: [...areas],
+      items: items.filter((_, i) => i !== r),
+      quantities: quantities.filter((_, i) => i !== r),
     };
-
-    setSnapshots((prev) => [snap, ...prev].slice(0, 5));
-    localStorage.setItem(
-      SNAPSHOTS_CACHE_KEY,
-      JSON.stringify([snap, ...snapshots].slice(0, 5))
-    );
-    alert("Saved (state + snapshot) to Supabase and exported to Excel.");
+    setItems(ns.items);
+    setQuantities(ns.quantities);
+    await persist(ns);
   };
 
-  /* Delete snapshot (with DELETE text confirmation) */
-  const deleteSnapshot = async (s: Snapshot) => {
-    const token = prompt(
-      `To permanently delete this snapshot, type: DELETE\n\n` +
-        `Snapshot: ${s.title ?? new Date(s.dateISO).toLocaleString()}`
-    );
-    if (token === null) return;
-    if (token !== "DELETE") {
-      alert("Deletion cancelled.");
-      return;
+  /* =========================================================
+     VIEW 3: RECORDS (by area)
+     - Lista y permite borrar registros de area_inventories
+     ========================================================= */
+  const deleteRecord = async (id: string) => {
+    if (!confirm("Delete this record?")) return;
+    try {
+      await deleteAreaRecord(id);
+      setRecords((rs) => rs.filter((x) => x.id !== id));
+    } catch (e) {
+      alert("Could not delete record.");
     }
-
-    const { error } = await supabase
-      .from("inventory_snapshots")
-      .delete()
-      .eq("id", s.id);
-
-    if (error) {
-      alert("Could not delete snapshot in Supabase: " + error.message);
-      return;
-    }
-    await refreshSnapshots();
-    if (viewSnap?.id === s.id) setViewSnap(null);
   };
 
-  /* View snapshot */
-  const openSnapshot = (s: Snapshot) => setViewSnap(s);
-  const closeSnapshot = () => setViewSnap(null);
+  /* ===================== UI ===================== */
+  if (loading) {
+    return (
+      <div className="container center" style={{ height: "100dvh" }}>
+        <div className="card" style={{ padding: 24, minWidth: 260, textAlign: "center" }}>
+          <div className="badge">Loading inventory…</div>
+        </div>
+      </div>
+    );
+  }
 
-  /* ============== UI ============== */
   return (
-    <div className="app">
-      {/* Header */}
-      <header className="header">
-        <div>
-          <h1 className="title">📦 Inventory</h1>
-          <p className="subtitle">
-            Edit quantities. Use 🗑️ to delete. Double-click names to rename.
-            “Save” exports Excel and stores a snapshot in Supabase.
-          </p>
+    <>
+      {/* Navbar */}
+      <div className="navbar">
+        <div className="brand">
+          <i>📦</i> Inventory
+          <span className="badge">{saving ? "Saving…" : "Synced"}</span>
         </div>
-
-        {/* Actions */}
-        <div className="toolbar">
-          <input
-            className="input"
-            type="text"
-            placeholder="Search item…"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-          />
-          <button className="btn" onClick={addArea}>
-            + Area
+        <div className="tabbar">
+          <button
+            className={`tab ${tab === "area" ? "active" : ""}`}
+            onClick={() => setTab("area")}
+          >
+            Area Inventory
           </button>
-          <button className="btn" onClick={addItem}>
-            + Item
+          <button
+            className={`tab ${tab === "matrix" ? "active" : ""}`}
+            onClick={() => setTab("matrix")}
+          >
+            Matrix
           </button>
-          <button className="btn btn-primary" onClick={saveSnapshotAndExcel}>
-            Save (Excel + snapshot)
+          <button
+            className={`tab ${tab === "records" ? "active" : ""}`}
+            onClick={() => setTab("records")}
+          >
+            Records (by Area)
           </button>
-          <span className="muted" style={{ marginLeft: 8 }}>
-            {syncing ? "Syncing…" : "Synced"}
-          </span>
         </div>
-      </header>
-
-      {/* Table */}
-      <div className="table-wrapper" style={{ marginTop: 10 }}>
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Item</th>
-              {areas.map((a, c) => (
-                <th key={c}>
-                  <div className="th-flex">
-                    <span
-                      title="Double-click to rename area"
-                      onDoubleClick={() => renameArea(c)}
-                      style={{ cursor: "text" }}
-                    >
-                      {a}
-                    </span>
-                    <button
-                      className="icon danger"
-                      title={`Delete area "${a}"`}
-                      onClick={() => removeArea(c)}
-                    >
-                      🗑️
-                    </button>
-                  </div>
-                </th>
-              ))}
-              <th className="bg">Total</th>
-              <th className="bg">⋯</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredIdx.map((r) => (
-              <tr key={r}>
-                <td
-                  className="cell-item"
-                  title="Double-click to rename item"
-                  onDoubleClick={() => renameItem(r)}
-                  style={{ cursor: "text" }}
-                >
-                  {items[r].name}
-                </td>
-                {areas.map((_, c) => {
-                  const val = quantities[r]?.[c] ?? 0;
-                  const low =
-                    (items[r].threshold ?? 0) > 0 && val < items[r].threshold;
-                  return (
-                    <td key={c} className={cx(low && "low")}>
-                      <input
-                        className="qty"
-                        type="number"
-                        min={0}
-                        value={val}
-                        onChange={(e) => setQty(r, c, e.target.value)}
-                      />
-                    </td>
-                  );
-                })}
-                <td className="bg strong center">{rowTotals[r]}</td>
-                <td className="center">
-                  <button
-                    className="icon danger"
-                    title={`Delete item "${items[r].name}"`}
-                    onClick={() => removeItem(r)}
-                  >
-                    🗑️
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-          <tfoot>
-            <tr>
-              <td className="strong">TOTAL</td>
-              {colTotals.map((t, i) => (
-                <td key={i} className="bg strong center">
-                  {t}
-                </td>
-              ))}
-              <td className="bg strong center">{grandTotal}</td>
-              <td className="bg" />
-            </tr>
-          </tfoot>
-        </table>
       </div>
 
-      {/* Snapshots list BELOW the table */}
-      <section style={{ marginTop: 14 }}>
-        <div className="card">
-          <div className="card-title">Saved snapshots (last 5)</div>
-          {loadingSnaps ? (
-            <div className="muted">Loading…</div>
-          ) : snapshots.length === 0 ? (
-            <div className="muted">No snapshots yet.</div>
-          ) : (
-            <ul className="snap-list">
-              {snapshots.slice(0, 5).map((s) => (
-                <li key={s.id} className="snap-item">
-                  <span className="truncate">
-                    {s.title ?? new Date(s.dateISO).toLocaleString()}
-                  </span>
-                  <div className="actions">
-                    <button
-                      className="btn btn-outline"
-                      onClick={() => openSnapshot(s)}
-                    >
-                      View
-                    </button>
-                    <button
-                      className="btn btn-danger"
-                      title="Delete snapshot"
-                      onClick={() => deleteSnapshot(s)}
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </section>
-
-      {/* Snapshot modal */}
-      {viewSnap && (
-        <div className="modal">
-          <div className="modal-card">
-            <div className="modal-head">
-              <div className="strong">
-                Snapshot: {new Date(viewSnap.dateISO).toLocaleString()}{" "}
-                {viewSnap.title ? `— ${viewSnap.title}` : ""}
-              </div>
-              <div className="actions">
-                <button className="btn" onClick={closeSnapshot}>
-                  Close
-                </button>
-                <button
-                  className="btn btn-danger"
-                  title="Delete this snapshot"
-                  onClick={() => deleteSnapshot(viewSnap)}
+      <div className="container" style={{ paddingTop: 18 }}>
+        {/* =============== VIEW 1: AREA INVENTORY =============== */}
+        {tab === "area" && (
+          <div className="card" style={{ padding: 16 }}>
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <div className="row">
+                <select
+                  className="select"
+                  value={areaIdx}
+                  onChange={(e) => setAreaIdx(Number(e.target.value))}
                 >
-                  Delete
+                  {areas.map((a, i) => (
+                    <option key={i} value={i}>
+                      {a}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  className="input"
+                  type="date"
+                  value={dateISO}
+                  onChange={(e) => setDateISO(e.target.value)}
+                  max={todayISO()}
+                  title="Inventory date"
+                />
+                <input
+                  className="input"
+                  placeholder="Search item…"
+                  value={filter}
+                  onChange={(e) => setFilter(e.target.value)}
+                />
+              </div>
+              <div className="row">
+                <button className="btn accent" onClick={saveAreaInventory}>
+                  Save inventory for this area
                 </button>
               </div>
             </div>
-            <div className="table-wrapper">
+
+            <div className="hr" />
+            <div className="card" style={{ padding: 12 }}>
               <table className="table">
                 <thead>
                   <tr>
-                    <th>Item</th>
-                    {viewSnap.data.areas.map((a, idx) => (
-                      <th key={idx}>{a}</th>
-                    ))}
-                    <th className="bg">Total</th>
+                    <th style={{ textAlign: "left" }}>Item</th>
+                    <th>Quantity — {areas[areaIdx]}</th>
+                    <th>Total (row)</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {viewSnap.data.items.map((it, r) => {
-                    const tot = (viewSnap.data.quantities[r] || []).reduce(
-                      (a, b) => a + (Number(b) || 0),
-                      0
-                    );
+                  {visibleRows.map((r) => {
+                    const v = quantities[r]?.[areaIdx] ?? 0;
+                    const isLow = items[r].threshold > 0 && v < items[r].threshold;
+                    const rowTot = rowTotals[r];
                     return (
                       <tr key={r}>
-                        <td className="cell-item">{it.name}</td>
-                        {viewSnap.data.areas.map((_, c) => (
-                          <td key={c} className="center">
-                            {viewSnap.data.quantities[r]?.[c] ?? 0}
-                          </td>
-                        ))}
-                        <td className="bg strong center">{tot}</td>
+                        <td style={{ textAlign: "left" }}>{items[r].name}</td>
+                        <td>
+                          <input
+                            type="number"
+                            min={0}
+                            className="input number"
+                            style={isLow ? { borderColor: "#5a2b2b", background: "#1a1319" } : undefined}
+                            value={v}
+                            onChange={(e) =>
+                              setQtyCell(r, areaIdx, Number(e.target.value) || 0)
+                            }
+                          />
+                        </td>
+                        <td>{rowTot}</td>
                       </tr>
                     );
                   })}
                 </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* =============== VIEW 2: MATRIX =============== */}
+        {tab === "matrix" && (
+          <div className="card" style={{ padding: 16 }}>
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <div className="row">
+                <button className="btn accent" onClick={addArea}>
+                  + Area
+                </button>
+                <button className="btn accent" onClick={addItem}>
+                  + Item
+                </button>
+              </div>
+              <div className="badge">Edit numbers in place. Trash 🗑️ to delete.</div>
+            </div>
+
+            <div className="hr" />
+
+            <div style={{ overflowX: "auto" }}>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: "left" }}>Item</th>
+                    {areas.map((a, c) => (
+                      <th key={c}>
+                        <div className="row" style={{ justifyContent: "center", gap: 8 }}>
+                          <span>{a}</span>
+                          <button
+                            className="btn danger"
+                            onClick={() => removeArea(c)}
+                            title={`Delete ${a}`}
+                          >
+                            🗑️
+                          </button>
+                        </div>
+                      </th>
+                    ))}
+                    <th>Total</th>
+                    <th>⋯</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((it, r) => (
+                    <tr key={r}>
+                      <td style={{ textAlign: "left" }}>{it.name}</td>
+                      {areas.map((_, c) => (
+                        <td key={c}>
+                          <input
+                            type="number"
+                            min={0}
+                            className="input number"
+                            value={quantities[r]?.[c] ?? 0}
+                            onChange={(e) => {
+                              const n = Number(e.target.value) || 0;
+                              setQuantities((prev) => {
+                                const cp = prev.map((row) => row.slice());
+                                cp[r][c] = n;
+                                return cp;
+                              });
+                            }}
+                            onBlur={() =>
+                              persist({
+                                areas: [...areas],
+                                items: [...items],
+                                quantities: quantities.map((row) => row.slice()),
+                              })
+                            }
+                          />
+                        </td>
+                      ))}
+                      <td>{rowTotals[r]}</td>
+                      <td>
+                        <button
+                          className="btn danger"
+                          onClick={() => removeItem(r)}
+                          title={`Delete ${it.name}`}
+                        >
+                          🗑️
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
                 <tfoot>
                   <tr>
-                    <td className="strong">TOTAL</td>
-                    {viewSnap.data.areas.map((_, c) => {
-                      const col = viewSnap.data.quantities.reduce(
-                        (a, row) => a + (Number(row?.[c]) || 0),
-                        0
-                      );
-                      return (
-                        <td key={c} className="bg strong center">
-                          {col}
-                        </td>
-                      );
-                    })}
-                    <td className="bg strong center">
-                      {viewSnap.data.quantities
-                        .flat()
-                        .reduce((a, b) => a + (Number(b) || 0), 0)}
-                    </td>
+                    <td style={{ textAlign: "left", fontWeight: 700 }}>TOTAL</td>
+                    {colTotals.map((t, i) => (
+                      <td key={i} style={{ fontWeight: 700 }}>
+                        {t}
+                      </td>
+                    ))}
+                    <td style={{ fontWeight: 800 }}>{grand}</td>
+                    <td />
                   </tr>
                 </tfoot>
               </table>
             </div>
           </div>
-        </div>
-      )}
-    </div>
+        )}
+
+        {/* =============== VIEW 3: RECORDS (by Area) =============== */}
+        {tab === "records" && (
+          <div className="card" style={{ padding: 16 }}>
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <div className="brand" style={{ gap: 8 }}>
+                <i>🗂️</i> Records (by Area)
+              </div>
+              <div className="row">
+                <button className="btn" onClick={refreshRecords}>
+                  Refresh
+                </button>
+              </div>
+            </div>
+            <div className="hr" />
+            {recLoading ? (
+              <div className="badge">Loading…</div>
+            ) : records.length === 0 ? (
+              <div className="muted">No records yet.</div>
+            ) : (
+              <div className="stack">
+                {records.map((r) => (
+                  <div key={r.id} className="card" style={{ padding: 12 }}>
+                    <div className="row" style={{ justifyContent: "space-between" }}>
+                      <div>
+                        <div style={{ fontWeight: 700 }}>
+                          {r.area_name} — {r.inventory_date}
+                        </div>
+                        <div className="muted">
+                          Items saved: {(r.items as any[])?.length ?? 0}
+                        </div>
+                      </div>
+                      <button className="btn danger" onClick={() => deleteRecord(r.id)}>
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </>
   );
 }
