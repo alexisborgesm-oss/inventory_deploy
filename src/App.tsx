@@ -1,4 +1,3 @@
-// src/App.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import "./styles.css";
 import { supabase } from "./supabase";
@@ -14,7 +13,7 @@ type AreaRecord = {
   id: string;
   area_name: string;
   area_index: number;
-  inventory_date: string; // ISO date (YYYY-MM-DD)
+  inventory_date: string; // YYYY-MM-DD
   items: { name: string; qty: number }[];
   created_at: string;
 };
@@ -73,6 +72,26 @@ async function deleteAreaRecord(id: string) {
   if (error) throw error;
 }
 
+/* =============== Reorder utils (DnD) =============== */
+function reorderArray<T>(arr: T[], start: number, end: number): T[] {
+  const copy = arr.slice();
+  const [moved] = copy.splice(start, 1);
+  copy.splice(end, 0, moved);
+  return copy;
+}
+function reorderColumns(matrix: number[][], start: number, end: number): number[][] {
+  // move column start -> end in every row
+  return matrix.map((row) => {
+    const r = row.slice();
+    const [col] = r.splice(start, 1);
+    r.splice(end, 0, col);
+    return r;
+  });
+}
+function reorderRows<T>(rows: T[], start: number, end: number): T[] {
+  return reorderArray(rows, start, end);
+}
+
 /* =============== App =============== */
 type Tab = "area" | "matrix" | "records" | "catalog";
 
@@ -102,7 +121,6 @@ export default function App() {
         setItems(remote.items);
         setQuantities(remote.quantities);
       } else {
-        // seed inicial si no hay nada en la base
         const seed: InventoryState = {
           areas: ["Kitchen", "Spa", "Front desk", "Office"],
           items: [
@@ -119,11 +137,7 @@ export default function App() {
         setAreas(seed.areas);
         setItems(seed.items);
         setQuantities(seed.quantities);
-        try {
-          await saveState(seed);
-        } catch (e) {
-          console.warn("Could not seed state:", e);
-        }
+        try { await saveState(seed); } catch {}
       }
       setLoading(false);
     })();
@@ -132,32 +146,18 @@ export default function App() {
   /* ------------ Load records list ------------ */
   const refreshRecords = async () => {
     setRecLoading(true);
-    try {
-      const data = await fetchAreaRecords(20);
-      setRecords(data);
-    } catch (e) {
-      console.warn("fetchAreaRecords error", e);
-    } finally {
-      setRecLoading(false);
-    }
+    try { setRecords(await fetchAreaRecords(20)); } catch (e) { console.warn(e); }
+    finally { setRecLoading(false); }
   };
-  useEffect(() => {
-    refreshRecords();
-  }, []);
+  useEffect(() => { refreshRecords(); }, []);
 
   /* ------------ Totals ------------ */
   const colTotals = useMemo(
-    () =>
-      areas.map((_, c) =>
-        quantities.reduce((a, row) => a + (Number(row?.[c]) || 0), 0)
-      ),
+    () => areas.map((_, c) => quantities.reduce((a, row) => a + (Number(row?.[c]) || 0), 0)),
     [areas, quantities]
   );
   const rowTotals = useMemo(
-    () =>
-      items.map((_, r) =>
-        (quantities[r] || []).reduce((a, b) => a + (Number(b) || 0), 0)
-      ),
+    () => items.map((_, r) => (quantities[r] || []).reduce((a, b) => a + (Number(b) || 0), 0)),
     [items, quantities]
   );
   const grand = useMemo(() => colTotals.reduce((a, b) => a + b, 0), [colTotals]);
@@ -172,8 +172,7 @@ export default function App() {
   const visibleRows = useMemo(() => {
     const q = filter.trim().toLowerCase();
     if (!q) return items.map((_, i) => i);
-    return items
-      .map((it, i) => ({ it, i }))
+    return items.map((it, i) => ({ it, i }))
       .filter(({ it }) => it.name.toLowerCase().includes(q))
       .map(({ i }) => i);
   }, [items, filter]);
@@ -189,8 +188,6 @@ export default function App() {
   const saveAreaInventory = async () => {
     if (!areas[areaIdx]) return alert("Choose an area.");
     if (!dateISO) return alert("Pick a date.");
-
-    // 1) Actualizar estado global (quantities de esa área)
     const stateToSave: InventoryState = {
       areas: [...areas],
       items: [...items],
@@ -199,8 +196,6 @@ export default function App() {
     setSaving(true);
     try {
       await saveState(stateToSave);
-
-      // 2) Insertar registro histórico del área con fecha
       const payload = items.map((it, r) => ({
         name: it.name,
         qty: Number(stateToSave.quantities[r]?.[areaIdx] ?? 0),
@@ -208,44 +203,42 @@ export default function App() {
       await insertAreaRecord({
         area_name: areas[areaIdx],
         area_index: areaIdx,
-        inventory_date: dateISO, // YYYY-MM-DD
+        inventory_date: dateISO,
         items: payload,
       });
-
-      // 3) Refrescar records para que se vea en la vista 3
       await refreshRecords();
-
-      alert(`Saved inventory for "${areas[areaIdx]}" (date: ${dateISO}).`);
+      alert(`Saved inventory for "${areas[areaIdx]}" (${dateISO}).`);
     } catch (e: any) {
       alert("Could not save. Check Supabase credentials/RLS.");
       console.warn(e);
-    } finally {
-      setSaving(false);
-    }
+    } finally { setSaving(false); }
   };
 
   /* =========================================================
-     VIEW 2: MATRIX (sin botones de crear)
+     VIEW 2: MATRIX (sin crear)
      ========================================================= */
   const persist = async (ns: InventoryState) => {
     setSaving(true);
-    try {
-      await saveState(ns);
-    } finally {
-      setSaving(false);
-    }
+    try { await saveState(ns); } finally { setSaving(false); }
   };
 
   const removeArea = async (c: number) => {
-    if (!confirm(`Delete area "${areas[c]}"? Quantities will be discarded.`))
-      return;
+    // Validación: si la columna tiene cantidades > 0, confirmamos con total
+    const colTotal = quantities.reduce((a, row) => a + (Number(row?.[c]) || 0), 0);
+    if (colTotal > 0) {
+      const ok = confirm(
+        `Area "${areas[c]}" has ${colTotal} items recorded across rows.\n` +
+        `Are you sure you want to delete it? Quantities in this area will be discarded.`
+      );
+      if (!ok) return;
+    } else {
+      if (!confirm(`Delete area "${areas[c]}"?`)) return;
+    }
     const ns: InventoryState = {
       areas: areas.filter((_, i) => i !== c),
       items: [...items],
       quantities: quantities.map((row) => {
-        const clone = row.slice();
-        clone.splice(c, 1);
-        return clone;
+        const clone = row.slice(); clone.splice(c, 1); return clone;
       }),
     };
     setAreas(ns.areas);
@@ -254,7 +247,17 @@ export default function App() {
   };
 
   const removeItem = async (r: number) => {
-    if (!confirm(`Delete item "${items[r].name}"?`)) return;
+    // Validación: si la fila tiene cantidades > 0, confirmamos con total
+    const rowTotal = (quantities[r] || []).reduce((a, b) => a + (Number(b) || 0), 0);
+    if (rowTotal > 0) {
+      const ok = confirm(
+        `Item "${items[r].name}" has ${rowTotal} units across areas.\n` +
+        `Are you sure you want to delete it? Quantities for this item will be discarded.`
+      );
+      if (!ok) return;
+    } else {
+      if (!confirm(`Delete item "${items[r].name}"?`)) return;
+    }
     const ns: InventoryState = {
       areas: [...areas],
       items: items.filter((_, i) => i !== r),
@@ -274,13 +277,11 @@ export default function App() {
       await deleteAreaRecord(id);
       setRecords((rs) => rs.filter((x) => x.id !== id));
       if (recordDetail?.id === id) setRecordDetail(null);
-    } catch (e) {
-      alert("Could not delete record.");
-    }
+    } catch { alert("Could not delete record."); }
   };
 
   /* =========================================================
-     VIEW 4: CATALOG (Áreas & Ítems)
+     VIEW 4: CATALOG (DnD + CRUD)
      ========================================================= */
   const [newArea, setNewArea] = useState("");
   const [newItem, setNewItem] = useState("");
@@ -314,8 +315,7 @@ export default function App() {
     };
     setItems(ns.items);
     setQuantities(ns.quantities);
-    setNewItem("");
-    setNewItemTh(0);
+    setNewItem(""); setNewItemTh(0);
     await persist(ns);
   };
 
@@ -348,11 +348,51 @@ export default function App() {
     await persist(ns);
   };
 
+  // ------ Drag & Drop state ------
+  const [dragType, setDragType] = useState<"area" | "item" | null>(null);
+  const [dragFrom, setDragFrom] = useState<number | null>(null);
+  const [dragOver, setDragOver] = useState<number | null>(null);
+
+  const onDragStart = (type: "area" | "item", index: number) => (e: React.DragEvent) => {
+    setDragType(type);
+    setDragFrom(index);
+    e.dataTransfer.effectAllowed = "move";
+    e.currentTarget.classList.add("dragging");
+  };
+  const onDragEnd = (e: React.DragEvent) => {
+    e.currentTarget.classList.remove("dragging");
+    setDragType(null); setDragFrom(null); setDragOver(null);
+  };
+  const onDragOver = (index: number) => (e: React.DragEvent) => {
+    e.preventDefault(); // needed to allow drop
+    setDragOver(index);
+  };
+  const onDrop = (index: number) => async (e: React.DragEvent) => {
+    e.preventDefault();
+    if (dragFrom === null || dragType === null) return;
+    if (index === dragFrom) return;
+
+    if (dragType === "area") {
+      const newAreas = reorderArray(areas, dragFrom, index);
+      const newQuantities = reorderColumns(quantities, dragFrom, index);
+      setAreas(newAreas);
+      setQuantities(newQuantities);
+      await persist({ areas: newAreas, items: [...items], quantities: newQuantities });
+    } else if (dragType === "item") {
+      const newItems = reorderRows(items, dragFrom, index);
+      const newQuantities = reorderRows(quantities, dragFrom, index);
+      setItems(newItems);
+      setQuantities(newQuantities);
+      await persist({ areas: [...areas], items: newItems, quantities: newQuantities });
+    }
+    setDragType(null); setDragFrom(null); setDragOver(null);
+  };
+
   /* ===================== UI ===================== */
   if (loading) {
     return (
       <div className="container center" style={{ height: "100dvh" }}>
-        <div className="card" style={{ padding: 24, minWidth: 260, textAlign: "center" }}>
+        <div className="card section" style={{ minWidth: 260, textAlign: "center" }}>
           <div className="badge">Loading inventory…</div>
         </div>
       </div>
@@ -368,74 +408,39 @@ export default function App() {
           <span className="badge">{saving ? "Saving…" : "Synced"}</span>
         </div>
         <div className="tabbar">
-          <button
-            className={`tab ${tab === "area" ? "active" : ""}`}
-            onClick={() => setTab("area")}
-          >
+          <button className={`tab ${tab === "area" ? "active" : ""}`} onClick={() => setTab("area")}>
             Area Inventory
           </button>
-          <button
-            className={`tab ${tab === "matrix" ? "active" : ""}`}
-            onClick={() => setTab("matrix")}
-          >
+          <button className={`tab ${tab === "matrix" ? "active" : ""}`} onClick={() => setTab("matrix")}>
             Matrix
           </button>
-          <button
-            className={`tab ${tab === "records" ? "active" : ""}`}
-            onClick={() => setTab("records")}
-          >
-            Records (by Area)
+          <button className={`tab ${tab === "records" ? "active" : ""}`} onClick={() => setTab("records")}>
+            Records
           </button>
-          <button
-            className={`tab ${tab === "catalog" ? "active" : ""}`}
-            onClick={() => setTab("catalog")}
-          >
+          <button className={`tab ${tab === "catalog" ? "active" : ""}`} onClick={() => setTab("catalog")}>
             Catalog
           </button>
         </div>
       </div>
 
       <div className="container" style={{ paddingTop: 18 }}>
-        {/* =============== VIEW 1: AREA INVENTORY =============== */}
+        {/* ===== VIEW 1: AREA INVENTORY ===== */}
         {tab === "area" && (
-          <div className="card" style={{ padding: 16 }}>
+          <div className="card section">
             <div className="row" style={{ justifyContent: "space-between" }}>
-              <div className="row">
-                <select
-                  className="select"
-                  value={areaIdx}
-                  onChange={(e) => setAreaIdx(Number(e.target.value))}
-                >
-                  {areas.map((a, i) => (
-                    <option key={i} value={i}>
-                      {a}
-                    </option>
-                  ))}
+              <div className="row" style={{ flex: 1, minWidth: 260 }}>
+                <select className="select" value={areaIdx} onChange={(e) => setAreaIdx(Number(e.target.value))}>
+                  {areas.map((a, i) => (<option key={i} value={i}>{a}</option>))}
                 </select>
-                <input
-                  className="input"
-                  type="date"
-                  value={dateISO}
-                  onChange={(e) => setDateISO(e.target.value)}
-                  max={todayISO()}
-                  title="Inventory date"
-                />
-                <input
-                  className="input"
-                  placeholder="Search item…"
-                  value={filter}
-                  onChange={(e) => setFilter(e.target.value)}
-                />
+                <input className="input" type="date" value={dateISO} onChange={(e) => setDateISO(e.target.value)}
+                       max={todayISO()} title="Inventory date"/>
+                <input className="input" placeholder="Search item…" value={filter} onChange={(e) => setFilter(e.target.value)} />
               </div>
-              <div className="row">
-                <button className="btn accent" onClick={saveAreaInventory}>
-                  Save inventory for this area
-                </button>
-              </div>
+              <button className="btn primary" onClick={saveAreaInventory}>Save inventory for this area</button>
             </div>
 
             <div className="hr" />
-            <div className="card" style={{ padding: 12 }}>
+            <div className="card section" style={{ padding: 12, overflowX: "auto" }}>
               <table className="table">
                 <thead>
                   <tr>
@@ -453,16 +458,10 @@ export default function App() {
                       <tr key={r}>
                         <td style={{ textAlign: "left" }}>{items[r].name}</td>
                         <td>
-                          <input
-                            type="number"
-                            min={0}
-                            className="input number"
-                            style={isLow ? { borderColor: "#5a2b2b", background: "#1a1319" } : undefined}
-                            value={v}
-                            onChange={(e) =>
-                              setQtyCell(r, areaIdx, Number(e.target.value) || 0)
-                            }
-                          />
+                          <input type="number" min={0} className="input number"
+                                 style={isLow ? { borderColor: "#6b2a2a", background: "#251616" } : undefined}
+                                 value={v}
+                                 onChange={(e) => setQtyCell(r, areaIdx, Number(e.target.value) || 0)} />
                         </td>
                         <td>{rowTot}</td>
                       </tr>
@@ -474,15 +473,13 @@ export default function App() {
           </div>
         )}
 
-        {/* =============== VIEW 2: MATRIX (sin crear) =============== */}
+        {/* ===== VIEW 2: MATRIX ===== */}
         {tab === "matrix" && (
-          <div className="card" style={{ padding: 16 }}>
+          <div className="card section">
             <div className="row" style={{ justifyContent: "space-between" }}>
-              <div className="badge">Edit numbers in place. Use Catalog to add new areas/items.</div>
+              <div className="badge">Edit in place. Use Catalog to add/rename. Trash to delete.</div>
             </div>
-
             <div className="hr" />
-
             <div style={{ overflowX: "auto" }}>
               <table className="table">
                 <thead>
@@ -492,13 +489,7 @@ export default function App() {
                       <th key={c}>
                         <div className="row" style={{ justifyContent: "center", gap: 8 }}>
                           <span>{a}</span>
-                          <button
-                            className="btn danger"
-                            onClick={() => removeArea(c)}
-                            title={`Delete ${a}`}
-                          >
-                            🗑️
-                          </button>
+                          <button className="btn danger" onClick={() => removeArea(c)} title={`Delete ${a}`}>🗑️</button>
                         </div>
                       </th>
                     ))}
@@ -513,37 +504,24 @@ export default function App() {
                       {areas.map((_, c) => (
                         <td key={c}>
                           <input
-                            type="number"
-                            min={0}
-                            className="input number"
+                            type="number" min={0} className="input number"
                             value={quantities[r]?.[c] ?? 0}
                             onChange={(e) => {
                               const n = Number(e.target.value) || 0;
                               setQuantities((prev) => {
                                 const cp = prev.map((row) => row.slice());
-                                cp[r][c] = n;
-                                return cp;
+                                cp[r][c] = n; return cp;
                               });
                             }}
-                            onBlur={() =>
-                              persist({
-                                areas: [...areas],
-                                items: [...items],
-                                quantities: quantities.map((row) => row.slice()),
-                              })
-                            }
+                            onBlur={() => persist({
+                              areas: [...areas], items: [...items], quantities: quantities.map((row) => row.slice())
+                            })}
                           />
                         </td>
                       ))}
                       <td>{rowTotals[r]}</td>
                       <td>
-                        <button
-                          className="btn danger"
-                          onClick={() => removeItem(r)}
-                          title={`Delete ${it.name}`}
-                        >
-                          🗑️
-                        </button>
+                        <button className="btn danger" onClick={() => removeItem(r)} title={`Delete ${it.name}`}>🗑️</button>
                       </td>
                     </tr>
                   ))}
@@ -551,11 +529,7 @@ export default function App() {
                 <tfoot>
                   <tr>
                     <td style={{ textAlign: "left", fontWeight: 700 }}>TOTAL</td>
-                    {colTotals.map((t, i) => (
-                      <td key={i} style={{ fontWeight: 700 }}>
-                        {t}
-                      </td>
-                    ))}
+                    {colTotals.map((t, i) => (<td key={i} style={{ fontWeight: 700 }}>{t}</td>))}
                     <td style={{ fontWeight: 800 }}>{grand}</td>
                     <td />
                   </tr>
@@ -565,22 +539,14 @@ export default function App() {
           </div>
         )}
 
-        {/* =============== VIEW 3: RECORDS (by Area) =============== */}
+        {/* ===== VIEW 3: RECORDS ===== */}
         {tab === "records" && (
-          <div className="card" style={{ padding: 16 }}>
+          <div className="card section">
             <div className="row" style={{ justifyContent: "space-between" }}>
-              <div className="brand" style={{ gap: 8 }}>
-                <i>🗂️</i> Records (by Area)
-              </div>
-              <div className="row">
-                <button className="btn" onClick={refreshRecords}>
-                  Refresh
-                </button>
-              </div>
+              <div className="brand" style={{ gap: 8 }}><i>🗂️</i> Records</div>
+              <button className="btn tonal" onClick={refreshRecords}>Refresh</button>
             </div>
-
             <div className="hr" />
-
             {recLoading ? (
               <div className="badge">Loading…</div>
             ) : records.length === 0 ? (
@@ -588,24 +554,14 @@ export default function App() {
             ) : (
               <div className="stack">
                 {records.map((r) => (
-                  <div key={r.id} className="card" style={{ padding: 12 }}>
-                    <div className="row" style={{ justifyContent: "space-between" }}>
-                      <div>
-                        <div style={{ fontWeight: 700 }}>
-                          {r.area_name} — {r.inventory_date}
-                        </div>
-                        <div className="muted">
-                          Items saved: {(r.items as any[])?.length ?? 0}
-                        </div>
-                      </div>
-                      <div className="row">
-                        <button className="btn" onClick={() => setRecordDetail(r)}>
-                          View
-                        </button>
-                        <button className="btn danger" onClick={() => deleteRecord(r.id)}>
-                          Delete
-                        </button>
-                      </div>
+                  <div key={r.id} className="card section dnd-item" style={{ gap: 8 }}>
+                    <div>
+                      <div style={{ fontWeight: 700 }}>{r.area_name} — {r.inventory_date}</div>
+                      <div className="muted">Items saved: {(r.items as any[])?.length ?? 0}</div>
+                    </div>
+                    <div className="row">
+                      <button className="btn" onClick={() => setRecordDetail(r)}>View</button>
+                      <button className="btn danger" onClick={() => deleteRecord(r.id)}>Delete</button>
                     </div>
                   </div>
                 ))}
@@ -614,13 +570,11 @@ export default function App() {
           </div>
         )}
 
-        {/* =============== VIEW 4: CATALOG (Áreas & Ítems) =============== */}
+        {/* ===== VIEW 4: CATALOG (DnD + CRUD) ===== */}
         {tab === "catalog" && (
-          <div className="card" style={{ padding: 16 }}>
+          <div className="card section">
             <div className="row" style={{ justifyContent: "space-between" }}>
-              <div className="brand" style={{ gap: 8 }}>
-                <i>🗃️</i> Catalog
-              </div>
+              <div className="brand" style={{ gap: 8 }}><i>🗃️</i> Catalog</div>
               <div className="badge">These lists feed Area Inventory & Matrix</div>
             </div>
 
@@ -628,19 +582,13 @@ export default function App() {
 
             <div className="stack">
               {/* AREAS */}
-              <div className="card" style={{ padding: 14 }}>
+              <div className="card section">
                 <div className="row" style={{ justifyContent: "space-between" }}>
                   <div style={{ fontWeight: 700 }}>Areas</div>
-                  <div className="row">
-                    <input
-                      className="input"
-                      placeholder="New area name…"
-                      value={newArea}
-                      onChange={(e) => setNewArea(e.target.value)}
-                    />
-                    <button className="btn accent" onClick={addArea}>
-                      + Add Area
-                    </button>
+                  <div className="row" style={{ flexWrap: "wrap" }}>
+                    <input className="input" placeholder="New area name…" value={newArea}
+                           onChange={(e) => setNewArea(e.target.value)} />
+                    <button className="btn primary" onClick={addArea}>+ Add Area</button>
                   </div>
                 </div>
 
@@ -648,27 +596,23 @@ export default function App() {
                 {areas.length === 0 ? (
                   <div className="muted">No areas yet.</div>
                 ) : (
-                  <div style={{ display: "grid", gap: 8 }}>
+                  <div style={{ display: "grid", gap: 10 }}>
                     {areas.map((a, i) => (
-                      <div
-                        key={i}
-                        className="row"
-                        style={{
-                          justifyContent: "space-between",
-                          border: "1px solid var(--border)",
-                          padding: "8px 10px",
-                          borderRadius: 10,
-                          background: "#0f1629",
-                        }}
+                      <div key={i}
+                           className={`dnd-item ${dragType==='area' && dragOver===i ? 'dropzone': ''}`}
+                           draggable
+                           onDragStart={onDragStart("area", i)}
+                           onDragEnd={onDragEnd}
+                           onDragOver={onDragOver(i)}
+                           onDrop={onDrop(i)}
                       >
-                        <div>{a}</div>
+                        <div className="row" style={{ alignItems: "center" }}>
+                          <span className="handle">⠿</span>
+                          <div>{a}</div>
+                        </div>
                         <div className="row">
-                          <button className="btn" onClick={() => renameArea(i)}>
-                            Rename
-                          </button>
-                          <button className="btn danger" onClick={() => removeArea(i)}>
-                            Delete
-                          </button>
+                          <button className="btn" onClick={() => renameArea(i)}>Rename</button>
+                          <button className="btn danger" onClick={() => removeArea(i)}>Delete</button>
                         </div>
                       </div>
                     ))}
@@ -677,30 +621,16 @@ export default function App() {
               </div>
 
               {/* ITEMS */}
-              <div className="card" style={{ padding: 14 }}>
+              <div className="card section">
                 <div className="row" style={{ justifyContent: "space-between" }}>
                   <div style={{ fontWeight: 700 }}>Items</div>
-                  <div className="row" style={{ gap: 8 }}>
-                    <input
-                      className="input"
-                      placeholder="New item name…"
-                      value={newItem}
-                      onChange={(e) => setNewItem(e.target.value)}
-                      style={{ minWidth: 160 }}
-                    />
-                    <input
-                      type="number"
-                      min={0}
-                      className="input"
-                      placeholder="Threshold"
-                      value={newItemTh}
-                      onChange={(e) => setNewItemTh(Number(e.target.value) || 0)}
-                      style={{ width: 120 }}
-                      title="Low stock threshold (optional)"
-                    />
-                    <button className="btn accent" onClick={addItem}>
-                      + Add Item
-                    </button>
+                  <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                    <input className="input" placeholder="New item name…" value={newItem}
+                           onChange={(e) => setNewItem(e.target.value)} style={{ minWidth: 160 }} />
+                    <input type="number" min={0} className="input" placeholder="Threshold"
+                           value={newItemTh} onChange={(e) => setNewItemTh(Number(e.target.value) || 0)}
+                           style={{ width: 130 }} title="Low stock threshold (optional)" />
+                    <button className="btn primary" onClick={addItem}>+ Add Item</button>
                   </div>
                 </div>
 
@@ -708,30 +638,26 @@ export default function App() {
                 {items.length === 0 ? (
                   <div className="muted">No items yet.</div>
                 ) : (
-                  <div style={{ display: "grid", gap: 8 }}>
+                  <div style={{ display: "grid", gap: 10 }}>
                     {items.map((it, i) => (
-                      <div
-                        key={i}
-                        className="row"
-                        style={{
-                          justifyContent: "space-between",
-                          border: "1px solid var(--border)",
-                          padding: "8px 10px",
-                          borderRadius: 10,
-                          background: "#0f1629",
-                        }}
+                      <div key={i}
+                           className={`dnd-item ${dragType==='item' && dragOver===i ? 'dropzone': ''}`}
+                           draggable
+                           onDragStart={onDragStart("item", i)}
+                           onDragEnd={onDragEnd}
+                           onDragOver={onDragOver(i)}
+                           onDrop={onDrop(i)}
                       >
-                        <div>
-                          <div style={{ fontWeight: 600 }}>{it.name}</div>
-                          <div className="muted">Threshold: {it.threshold || 0}</div>
+                        <div className="row" style={{ alignItems: "center" }}>
+                          <span className="handle">⠿</span>
+                          <div>
+                            <div style={{ fontWeight: 600 }}>{it.name}</div>
+                            <div className="muted">Threshold: {it.threshold || 0}</div>
+                          </div>
                         </div>
                         <div className="row">
-                          <button className="btn" onClick={() => renameItem(i)}>
-                            Rename
-                          </button>
-                          <button className="btn danger" onClick={() => removeItem(i)}>
-                            Delete
-                          </button>
+                          <button className="btn" onClick={() => renameItem(i)}>Rename</button>
+                          <button className="btn danger" onClick={() => removeItem(i)}>Delete</button>
                         </div>
                       </div>
                     ))}
@@ -749,25 +675,16 @@ export default function App() {
               <div className="modal-head">
                 <div className="brand" style={{ gap: 8 }}>
                   <i>🗂️</i>
-                  <span>
-                    {recordDetail.area_name} — {recordDetail.inventory_date}
-                  </span>
+                  <span>{recordDetail.area_name} — {recordDetail.inventory_date}</span>
                 </div>
-                <button className="btn" onClick={() => setRecordDetail(null)}>
-                  Close
-                </button>
+                <button className="btn" onClick={() => setRecordDetail(null)}>Close</button>
               </div>
               <div className="modal-body">
-                <div className="badge" style={{ marginBottom: 8 }}>
-                  Items in this record
-                </div>
-                <div className="card" style={{ padding: 10 }}>
+                <div className="badge" style={{ marginBottom: 8 }}>Items in this record</div>
+                <div className="card section" style={{ padding: 10 }}>
                   <table className="table">
                     <thead>
-                      <tr>
-                        <th style={{ textAlign: "left" }}>Item</th>
-                        <th>Quantity</th>
-                      </tr>
+                      <tr><th style={{ textAlign: "left" }}>Item</th><th>Quantity</th></tr>
                     </thead>
                     <tbody>
                       {recordDetail.items.map((it, i) => (
